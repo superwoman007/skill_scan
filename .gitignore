@@ -1,0 +1,11 @@
+node_modules/
+dist/
+report*.md
+report*.json
+report*.sarif
+*.baseline.json
+*.log
+*.tmp
+.DS_Store
+.trae/
+说明文档.md
