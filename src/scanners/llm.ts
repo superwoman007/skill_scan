@@ -136,7 +136,7 @@ Be conservative - only report clear security issues. If no issues found, return 
         messages: [
           {
             role: 'system',
-            content: 'You are a security code analysis assistant. Always respond with valid JSON.'
+            content: 'You are a security code analysis assistant. Always respond with valid JSON. Do not include any other text or explanations.'
           },
           {
             role: 'user',
@@ -144,7 +144,7 @@ Be conservative - only report clear security issues. If no issues found, return 
           }
         ],
         temperature: 0.3,
-        response_format: { type: 'json_object' }
+        stream: false
       })
     });
 
@@ -162,7 +162,11 @@ Be conservative - only report clear security issues. If no issues found, return 
       return typeof data.message.content === 'string' 
         ? data.message.content 
         : JSON.stringify(data.message.content);
+    } else if (typeof data === 'string') {
+      // 直接返回字符串响应
+      return data;
     } else {
+      console.error('Unexpected API response format:', JSON.stringify(data));
       throw new Error('Unexpected API response format');
     }
   }
