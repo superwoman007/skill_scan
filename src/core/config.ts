@@ -2,9 +2,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SkillConfig } from '../types';
 
+interface PresetConfig {
+  name: string;
+  description: string;
+  failOn?: 'low' | 'medium' | 'high' | 'critical';
+  enabledGroups?: string[];
+  disabledRuleIds?: string[];
+}
+
+interface Presets {
+  [key: string]: PresetConfig;
+}
+
 // 配置管理器：
 // - 负责加载默认配置与用户配置文件（JSON）
 // - 支持 CLI 覆盖配置，供 Runner 运行时使用
+// - 支持预设配置（strict/balanced/development等）
 export class ConfigManager {
   private config: SkillConfig = {
     include: ['**/*.{js,ts,py,json}'],
@@ -12,6 +25,7 @@ export class ConfigManager {
     rules: [],
     outputFormat: 'md'
   };
+  private presets: Presets = {};
 
   /**
    * 创建配置管理器并加载配置
@@ -19,6 +33,7 @@ export class ConfigManager {
    * @returns {void} 无返回值
    */
   constructor(configPath?: string) {
+    this.loadPresets();
     if (configPath) {
       this.loadConfig(configPath);
     } else {
@@ -30,6 +45,73 @@ export class ConfigManager {
   }
 
   /**
+   * 加载预设配置
+   * @returns {void} 无返回值
+   */
+  private loadPresets(): void {
+    try {
+      const presetsPath = path.join(__dirname, '../../presets.json');
+      if (fs.existsSync(presetsPath)) {
+        const content = fs.readFileSync(presetsPath, 'utf-8');
+        const data = JSON.parse(content);
+        this.presets = data.presets || {};
+      }
+    } catch (error) {
+      console.error('Error loading presets:', error);
+    }
+  }
+
+  /**
+   * 应用预设配置
+   * @param {string} presetName - 预设配置名称
+   * @returns {boolean} 是否成功应用
+   */
+  public applyPreset(presetName: string): boolean {
+    const preset = this.presets[presetName];
+    if (!preset) {
+      console.error(`Preset not found: ${presetName}`);
+      console.log('Available presets:', Object.keys(this.presets).join(', '));
+      return false;
+    }
+
+    console.log(`Applying preset: ${preset.name}`);
+    console.log(`  Description: ${preset.description}`);
+
+    if (preset.failOn) {
+      this.config.failOn = preset.failOn;
+    }
+
+    if (preset.enabledGroups && preset.enabledGroups.includes('*')) {
+      this.config.enabledGroups = undefined; // 启用所有规则组
+      this.config.disabledRuleIds = preset.disabledRuleIds || [];
+    } else {
+      if (preset.enabledGroups) {
+        this.config.enabledGroups = preset.enabledGroups;
+      }
+      if (preset.disabledRuleIds) {
+        this.config.disabledRuleIds = preset.disabledRuleIds;
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * 列出可用预设配置
+   * @returns {void} 无返回值
+   */
+  public listPresets(): void {
+    console.log('Available presets:');
+    console.log('');
+    Object.entries(this.presets).forEach(([key, preset]) => {
+      console.log(`  ${key}`);
+      console.log(`    ${preset.name}`);
+      console.log(`    ${preset.description}`);
+      console.log('');
+    });
+  }
+
+  /**
    * 加载配置文件并合并到默认配置
    * @param {string} filePath - 配置文件路径
    * @returns {void} 无返回值；读取失败时仅输出错误日志
@@ -38,6 +120,12 @@ export class ConfigManager {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const userConfig = JSON.parse(content);
+
+      // 如果配置指定了预设，先应用预设
+      if (userConfig.preset) {
+        this.applyPreset(userConfig.preset);
+      }
+
       // 浅合并：用户配置覆盖默认值
       this.config = { ...this.config, ...userConfig };
     } catch (error) {

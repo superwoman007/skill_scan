@@ -1,0 +1,44 @@
+{
+  "presets": {
+    "strict": {
+      "name": "Strict Mode",
+      "description": "All rules enabled, high sensitivity, fail on any finding",
+      "failOn": "low",
+      "enabledGroups": ["*"],
+      "disabledRuleIds": []
+    },
+    "balanced": {
+      "name": "Balanced Mode",
+      "description": "Production recommended settings with moderate sensitivity",
+      "failOn": "high",
+      "enabledGroups": ["owasp-top10", "secrets", "command-exec", "ai-prompt", "ai-leak"],
+      "disabledRuleIds": []
+    },
+    "development": {
+      "name": "Development Mode",
+      "description": "Fast scan with low false positives, only critical/high",
+      "failOn": "critical",
+      "enabledGroups": ["owasp-top10", "secrets"],
+      "disabledRuleIds": []
+    },
+    "ai-focused": {
+      "name": "AI Security Focus",
+      "description": "Focus on AI-specific vulnerabilities",
+      "failOn": "high",
+      "enabledGroups": ["ai-prompt", "ai-leak", "ai-privilege", "ai-jailbreak", "ai-privacy", "ai-output", "ai-tool", "ai-safety", "ai-abuse", "ai-auth", "ai-indirect"],
+      "disabledRuleIds": []
+    },
+    "owasp-only": {
+      "name": "OWASP Top 10 Only",
+      "description": "Only OWASP Top 10 security rules",
+      "failOn": "high",
+      "enabledGroups": ["owasp-top10"],
+      "disabledRuleIds": []
+    }
+  },
+  "recommendedPresets": {
+    "skill-development": "balanced",
+    "production-skill": "strict",
+    "quick-scan": "development"
+  }
+}

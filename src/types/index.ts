@@ -7,12 +7,13 @@ export interface Rule {
   name: string;
   description: string;
   severity: Severity;
-  type: 'regex' | 'ast' | 'config';
+  type: 'regex' | 'ast' | 'config' | 'llm';
   pattern?: string;
   selector?: string;
   fix?: string;
   tags?: string[];
   group?: string;
+  confidence?: number; // 规则置信度
 }
 
 // 漏洞结果：记录规则命中位置、代码片段与修复建议
