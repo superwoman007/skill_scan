@@ -51,4 +51,9 @@ export interface SkillConfig {
   writeBaseline?: boolean;
   outputFormat?: 'md' | 'json' | 'sarif';
   failOn?: Severity;
+  // LLM 配置
+  useLlm?: boolean;
+  apiKey?: string;
+  llmModel?: string;
+  llmEndpoint?: string;
 }

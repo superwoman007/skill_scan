@@ -3,16 +3,18 @@ import { BaseScanner } from './base';
 
 /**
  * LLM语义分析扫描器
- * 使用LLM对代码进行语义分析，检测安全风险
+ * 支持多种LLM提供商：OpenAI、智谱AI (GLM-4)等
  */
 export class LLMScanner extends BaseScanner {
   private apiKey?: string;
   private model: string;
+  private baseURL: string;
 
-  constructor(rules: Rule[], apiKey?: string, model: string = 'gpt-4o-mini') {
+  constructor(rules: Rule[], apiKey?: string, model?: string, baseURL?: string) {
     super(rules);
     this.apiKey = apiKey || process.env.SKILL_SCAN_LLM_API_KEY;
-    this.model = model;
+    this.baseURL = baseURL || process.env.SKILL_SCAN_LLM_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
+    this.model = model || process.env.SKILL_SCAN_LLM_MODEL || 'gpt-4o-mini';
   }
 
   /**
@@ -21,11 +23,15 @@ export class LLMScanner extends BaseScanner {
   async scan(filePath: string, content: string): Promise<Vulnerability[]> {
     if (!this.apiKey) {
       console.warn('LLM Scanner: No API key provided, skipping LLM analysis');
+      console.warn('Set SKILL_SCAN_LLM_API_KEY environment variable or pass apiKey parameter');
       return [];
     }
 
     const vulnerabilities: Vulnerability[] = [];
     const lines = content.split('\n');
+
+    console.log(`LLM Scanner: Using provider at ${this.baseURL}`);
+    console.log(`LLM Scanner: Using model ${this.model}`);
 
     // 将文件分段，每段100行，避免token超限
     const chunkSize = 100;
@@ -73,7 +79,7 @@ export class LLMScanner extends BaseScanner {
       codeSnippet: this.getCodeSnippet(lines, finding.lineOffset || 0),
       suggestion: finding.suggestion,
       confidence: finding.confidence || 0.7
-'    } as Vulnerability));
+    } as Vulnerability));
   }
 
   /**
@@ -117,8 +123,9 @@ Be conservative - only report clear security issues. If no issues found, return 
    * 调用LLM API
    */
   private async callLLM(prompt: string): Promise<string> {
-    // OpenAI API调用示例
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const endpoint = this.baseURL;
+    
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -146,7 +153,18 @@ Be conservative - only report clear security issues. If no issues found, return 
     }
 
     const data = await response.json();
-    return data.choices[0].message.content;
+    
+    // 支持多种API响应格式
+    if (data.choices && data.choices[0]) {
+      return data.choices[0].message.content;
+    } else if (data.message && data.message.content) {
+      // 智谱API可能返回的格式
+      return typeof data.message.content === 'string' 
+        ? data.message.content 
+        : JSON.stringify(data.message.content);
+    } else {
+      throw new Error('Unexpected API response format');
+    }
   }
 
   /**

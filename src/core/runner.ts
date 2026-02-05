@@ -4,6 +4,7 @@ import { ConfigManager } from './config';
 import { RuleLoader } from './rules';
 import { RegexScanner } from '../scanners/code';
 import { AstScanner } from '../scanners/ast';
+import { LLMScanner } from '../scanners/llm';
 import { Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
 
 // 扫描调度器：
@@ -53,6 +54,11 @@ export class Runner {
     // 2) 初始化扫描器
     const regexScanner = new RegexScanner(rules);
     const astScanner = new AstScanner(rules);
+    const llmScanner = new LLMScanner(
+      rules.filter(r => r.type === 'llm'),
+      config.apiKey,
+      config.llmModel
+    );
 
     const vulnerabilities: Vulnerability[] = [];
     let filesScanned = 0;
@@ -94,6 +100,13 @@ export class Runner {
           const content = fs.readFileSync(file, 'utf-8');
           const results = await regexScanner.scan(file, content);
           const astResults = await astScanner.scan(file, content);
+          
+          // 如果配置了API key且没有禁用，则运行LLM扫描
+          if (config.useLlm && config.apiKey) {
+            const llmResults = await llmScanner.scan(file, content);
+            vulnerabilities.push(...llmResults);
+          }
+          
           vulnerabilities.push(...results);
           vulnerabilities.push(...astResults);
         } catch (err) {
