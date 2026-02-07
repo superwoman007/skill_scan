@@ -176,10 +176,25 @@ Be conservative - only report clear security issues. If no issues found, return 
    */
   private parseLLMResponse(response: string): any[] {
     try {
-      const parsed = JSON.parse(response);
+      // 尝试提取 JSON 内容（处理 markdown 代码块）
+      let jsonContent = response.trim();
+
+      // 移除 markdown 代码块标记
+      if (jsonContent.startsWith('```')) {
+        const match = jsonContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (match && match[1]) {
+          jsonContent = match[1].trim();
+        } else {
+          // 如果没有结束标记，移除开头的 ```
+          jsonContent = jsonContent.replace(/^```(?:json)?\s*/, '');
+        }
+      }
+
+      const parsed = JSON.parse(jsonContent);
       return parsed.findings || [];
     } catch (error) {
       console.error('LLM Scanner: Failed to parse LLM response', error);
+      console.error('LLM Scanner: Response was:', response.substring(0, 500));
       return [];
     }
   }

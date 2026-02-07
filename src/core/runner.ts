@@ -24,6 +24,13 @@ export class Runner {
   }
 
   /**
+   * 列出所有可用预设配置
+   */
+  public listPresets(): void {
+    this.configManager.listPresets();
+  }
+
+  /**
    * 执行扫描流程
    * @param {string} [targetDir] - 扫描目标路径（目录或文件），默认当前工作目录
    * @param {Partial<SkillConfig>} [overrides] - CLI 覆盖配置项
@@ -35,7 +42,11 @@ export class Runner {
       this.configManager.applyOverrides(overrides);
     }
     const config = this.configManager.getConfig();
-    
+
+    console.log('Config useLlm:', config.useLlm);
+    console.log('Config apiKey:', config.apiKey ? 'set' : 'not set');
+    console.log('Env API key:', process.env.SKILL_SCAN_LLM_API_KEY ? 'set' : 'not set');
+
     // 1) 规则加载：内置 + 配置内规则 + 自定义文件 + 规则目录
     let rules = RuleLoader.loadBuiltinRules();
     if (config.rules) {
@@ -56,8 +67,9 @@ export class Runner {
     const astScanner = new AstScanner(rules);
     const llmScanner = new LLMScanner(
       rules.filter(r => r.type === 'llm'),
-      config.apiKey,
-      config.llmModel
+      config.apiKey || process.env.SKILL_SCAN_LLM_API_KEY,
+      config.llmModel || process.env.SKILL_SCAN_LLM_MODEL,
+      process.env.SKILL_SCAN_LLM_ENDPOINT
     );
 
     const vulnerabilities: Vulnerability[] = [];
@@ -86,6 +98,9 @@ export class Runner {
     }
 
     // 4) 目录扫描：按 include 模式展开文件列表
+    const llmMaxFiles = config.llmMaxFiles || 5; // 默认最多扫描 5 个文件
+    let llmScannedCount = 0;
+
     for (const pattern of config.include || []) {
       const files = await glob(pattern, {
         ignore: config.exclude,
@@ -100,19 +115,25 @@ export class Runner {
           const content = fs.readFileSync(file, 'utf-8');
           const results = await regexScanner.scan(file, content);
           const astResults = await astScanner.scan(file, content);
-          
-          // 如果配置了API key且没有禁用，则运行LLM扫描
-          if (config.useLlm && config.apiKey) {
+
+          // 如果配置了API key且没有禁用，且未超过LLM扫描限制，则运行LLM扫描
+          if (config.useLlm && (config.apiKey || process.env.SKILL_SCAN_LLM_API_KEY) && llmScannedCount < llmMaxFiles) {
+            console.log(`[LLM] Scanning (${llmScannedCount + 1}/${llmMaxFiles}): ${file}`);
             const llmResults = await llmScanner.scan(file, content);
             vulnerabilities.push(...llmResults);
+            llmScannedCount++;
           }
-          
+
           vulnerabilities.push(...results);
           vulnerabilities.push(...astResults);
         } catch (err) {
           console.error(`Error scanning file ${file}:`, err);
         }
       }
+    }
+
+    if (llmScannedCount >= llmMaxFiles && config.useLlm) {
+      console.log(`[LLM] 已达到最大扫描文件数限制 (${llmMaxFiles})，其余文件仅使用正则和AST扫描。`);
     }
 
     // 5) 基线过滤：用于忽略历史遗留告警

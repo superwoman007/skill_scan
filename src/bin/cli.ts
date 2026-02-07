@@ -21,6 +21,9 @@ type ScanOptions = {
   baseline?: string;
   writeBaseline?: boolean;
   failOn?: string;
+  preset?: string;
+  listPresets?: boolean;
+  useLlm?: boolean;
 };
 
 program
@@ -40,6 +43,9 @@ program
   .option('--baseline <path>', '基线文件路径')
   .option('--write-baseline', '写入当前结果为基线')
   .option('--fail-on <level>', '失败阈值 (low|medium|high|critical)')
+  .option('--preset <name>', '使用预设配置')
+  .option('--list-presets', '列出所有可用预设')
+  .option('--use-llm', '启用 LLM 语义分析')
   .action(handleScan);
 
 /**
@@ -79,7 +85,16 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
   }
 
   const runner = new Runner(options.config);
+
+  // 处理 listPresets 选项
+  if (options.listPresets) {
+    runner.listPresets();
+    process.exit(0);
+  }
+
   const overrides: Partial<SkillConfig> = pruneUndefined({
+    useLlm: options.useLlm,
+    preset: options.preset,
     rulesDir: options.rulesDir,
     enabledGroups: options.enableGroup && options.enableGroup.length > 0 ? options.enableGroup : undefined,
     disabledRuleIds: options.disableRule && options.disableRule.length > 0 ? options.disableRule : undefined,

@@ -1,0 +1,162 @@
+[
+  {
+    "id": "AI-001",
+    "name": "提示注入指令",
+    "description": "检测到尝试绕过系统指令的提示注入语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "对用户输入进行指令隔离与安全过滤，避免覆盖系统提示。",
+    "tags": ["ai", "prompt-injection"],
+    "group": "ai-prompt"
+  },
+  {
+    "id": "AI-002",
+    "name": "系统提示泄露请求",
+    "description": "检测到请求系统提示或内部规则的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "不要响应获取系统提示的请求，这可能导致敏感信息泄露。",
+    "tags": ["ai", "leak"],
+    "group": "ai-leak"
+  },
+  {
+    "id": "AI-003",
+    "name": "跨用户上下文获取",
+    "description": "检测到请求其他用户对话或上下文的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "严格隔离不同用户的对话上下文，防止跨用户数据泄露。",
+    "tags": ["ai", "privacy"],
+    "group": "ai-privacy"
+  },
+  {
+    "id": "AI-004",
+    "name": "角色混淆指令",
+    "description": "检测到试图冒充系统或管理员的角色指令。",
+    "severity": "medium",
+    "type": "llm",
+    "fix": "不要执行未验证的角色切换请求，保持系统行为一致性。",
+    "tags": ["ai", "privilege"],
+    "group": "ai-privilege"
+  },
+  {
+    "id": "AI-005",
+    "name": "间接提示注入来源",
+    "description": "检测到从外部内容加载并执行指令的语句。",
+    "severity": "medium",
+    "type": "llm",
+    "fix": "验证和清理从外部来源加载的所有内容，避免代码注入。",
+    "tags": ["ai", "prompt-injection"],
+    "group": "ai-indirect"
+  },
+  {
+    "id": "AI-006",
+    "name": "越狱指令",
+    "description": "检测到疑似越狱或绕过安全限制的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "不响应试图绕过安全限制的请求，保持安全边界。",
+    "tags": ["ai", "jailbreak"],
+    "group": "ai-jailbreak"
+  },
+  {
+    "id": "AI-007",
+    "name": "资源耗尽诱导",
+    "description": "检测到可能导致资源耗尽的高成本请求。",
+    "severity": "medium",
+    "type": "llm",
+    "fix": "限制生成长度、次数和计算复杂度，防止资源耗尽攻击。",
+    "tags": ["ai", "abuse"],
+    "group": "ai-abuse"
+  },
+  {
+    "id": "AI-008",
+    "name": "恶意代码生成请求",
+    "description": "检测到请求生成恶意代码或漏洞利用代码的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "拒绝生成恶意软件、漏洞或攻击性代码的请求。",
+    "tags": ["ai", "abuse"],
+    "group": "ai-abuse"
+  },
+  {
+    "id": "AI-009",
+    "name": "PII 泄露请求",
+    "description": "检测到请求个人身份信息的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "不要泄露或查询个人身份信息，保护用户隐私。",
+    "tags": ["ai", "privacy"],
+    "group": "ai-privacy"
+  },
+  {
+    "id": "AI-010",
+    "name": "认证绕过暗示",
+    "description": "检测到绕过认证或获取管理员访问的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "严格遵守认证和授权流程，不要提供绕过方法。",
+    "tags": ["ai", "auth"],
+    "group": "ai-auth"
+  },
+  {
+    "id": "AI-011",
+    "name": "系统提示拼接用户输入",
+    "description": "检测到系统提示与用户输入进行字符串拼接的模式。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "使用模板引擎或消息数组，避免直接拼接用户输入到系统提示。",
+    "tags": ["ai", "prompt-injection"],
+    "group": "ai-prompt"
+  },
+  {
+    "id": "AI-012",
+    "name": "模型输出驱动命令执行",
+    "description": "检测到模型输出直接用于系统命令执行的模式。",
+    "severity": "critical",
+    "type": "llm",
+    "fix": "绝对不要将模型输出直接用于命令执行，使用白名单和参数化方法。",
+    "tags": ["ai", "code-injection"],
+    "group": "ai-tool"
+  },
+  {
+    "id": "AI-013",
+    "name": "外部内容注入到提示",
+    "description": "检测到将外部内容直接拼接到提示的模式。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "验证、清理和限制从外部来源加载的内容长度和格式。",
+    "tags": ["ai", "prompt-injection"],
+    "group": "ai-indirect"
+  },
+  {
+    "id": "AI-014",
+    "name": "日志输出提示内容",
+    "description": "检测到将提示或模型输出写入日志的模式。",
+    "severity": "medium",
+    "type": "llm",
+    "fix": "日志中不要包含完整的提示或敏感的用户数据，只记录元数据。",
+    "tags": ["ai", "leak"],
+    "group": "ai-leak"
+  },
+  {
+    "id": "AI-015",
+    "name": "关闭安全过滤或审核",
+    "description": "检测到试图关闭安全过滤或审核的语句。",
+    "severity": "high",
+    "type": "llm",
+    "fix": "不响应关闭安全过滤的请求，保持安全措施始终有效。",
+    "tags": ["ai", "jailbreak"],
+    "group": "ai-safety"
+  },
+  {
+    "id": "AI-016",
+    "name": "未设定最大 token 或超长生成",
+    "description": "检测到没有限制生成长度或使用超大 token 数量的模式。",
+    "severity": "medium",
+    "type": "llm",
+    "fix": "始终设置合理的 max_tokens 限制，防止无限生成和高成本。",
+    "tags": ["ai", "resource"],
+    "group": "ai-abuse"
+  }
+]

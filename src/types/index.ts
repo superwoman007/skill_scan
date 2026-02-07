@@ -51,9 +51,11 @@ export interface SkillConfig {
   writeBaseline?: boolean;
   outputFormat?: 'md' | 'json' | 'sarif';
   failOn?: Severity;
+  preset?: string; // 预设配置名称
   // LLM 配置
   useLlm?: boolean;
   apiKey?: string;
   llmModel?: string;
   llmEndpoint?: string;
+  llmMaxFiles?: number; // 限制 LLM 扫描的最大文件数
 }

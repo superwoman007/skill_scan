@@ -147,6 +147,13 @@ export class ConfigManager {
    * @returns {void} 无返回值
    */
   public applyOverrides(overrides: Partial<SkillConfig>): void {
-    this.config = { ...this.config, ...overrides };
+    // 如果指定了预设，先应用预设
+    if (overrides.preset) {
+      this.applyPreset(overrides.preset);
+    }
+
+    // 合并其他配置字段（不包括 preset）
+    const { preset, ...otherOverrides } = overrides;
+    this.config = { ...this.config, ...otherOverrides };
   }
 }
