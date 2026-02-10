@@ -4,8 +4,10 @@ import { ConfigManager } from './config';
 import { RuleLoader } from './rules';
 import { RegexScanner } from '../scanners/code';
 import { AstScanner } from '../scanners/ast';
-import { LLMScanner } from '../scanners/llm';
-import { Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
+import { createLlmClient } from '../llm/client';
+import { LlmDiscoveryScanner } from '../scanners/llmDiscovery';
+import { LlmEnricher } from '../scanners/llmEnricher';
+import { LlmFinding, LlmStats, Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
 
 // 扫描调度器：
 // - 读取配置与规则
@@ -43,10 +45,6 @@ export class Runner {
     }
     const config = this.configManager.getConfig();
 
-    console.log('Config useLlm:', config.useLlm);
-    console.log('Config apiKey:', config.apiKey ? 'set' : 'not set');
-    console.log('Env API key:', process.env.SKILL_SCAN_LLM_API_KEY ? 'set' : 'not set');
-
     // 1) 规则加载：内置 + 配置内规则 + 自定义文件 + 规则目录
     let rules = RuleLoader.loadBuiltinRules();
     if (config.rules) {
@@ -65,30 +63,61 @@ export class Runner {
     // 2) 初始化扫描器
     const regexScanner = new RegexScanner(rules);
     const astScanner = new AstScanner(rules);
-    const llmScanner = new LLMScanner(
-      rules.filter(r => r.type === 'llm'),
-      config.apiKey || process.env.SKILL_SCAN_LLM_API_KEY,
-      config.llmModel || process.env.SKILL_SCAN_LLM_MODEL,
-      process.env.SKILL_SCAN_LLM_ENDPOINT
-    );
 
     const vulnerabilities: Vulnerability[] = [];
     let filesScanned = 0;
+    const fileContents = new Map<string, string>();
+    const llmFindings: LlmFinding[] = [];
+    const llmStats: LlmStats = { calls: 0, cacheHits: 0, failures: 0, durationMs: 0 };
+    const llmEnabled = Boolean(config.llm?.enabled || config.useLlm);
+    const effectiveLlmConfig = {
+      ...(config.llm ?? {}),
+      enabled: llmEnabled,
+      baseUrl: (config.llm?.baseUrl ?? config.llmEndpoint) as string | undefined,
+      model: (config.llm?.model ?? config.llmModel) as string | undefined,
+      apiKey: (config.llm?.apiKey ?? config.apiKey) as string | undefined,
+      gate: (config.llm?.gate ?? false) as boolean
+    };
+    const llmClient = llmEnabled ? createLlmClient(effectiveLlmConfig) : undefined;
+    const llmDiscovery = llmClient ? new LlmDiscoveryScanner(llmClient, effectiveLlmConfig) : undefined;
+    const llmEnricher = llmClient ? new LlmEnricher(llmClient, effectiveLlmConfig) : undefined;
 
     // 3) 单文件扫描：直接读取内容并运行两个扫描器
     if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
       try {
         const content = fs.readFileSync(targetDir, 'utf-8');
+        fileContents.set(targetDir, content);
         const results = await regexScanner.scan(targetDir, content);
         const astResults = await astScanner.scan(targetDir, content);
         vulnerabilities.push(...results, ...astResults);
         filesScanned = 1;
+
+        if (llmDiscovery) {
+          const discoveryResult = await llmDiscovery.discover({ filePath: targetDir, content });
+          vulnerabilities.push(...discoveryResult.vulnerabilities);
+          llmFindings.push(...discoveryResult.findings);
+          mergeLlmStats(llmStats, discoveryResult.stats);
+        }
       } catch (err) {
         console.error(`Error scanning file ${targetDir}:`, err);
       }
+
       const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
+
+      if (llmEnricher) {
+        const enrichResult = await llmEnricher.enrich(filteredVulnerabilities, fileContents);
+        llmFindings.push(...enrichResult.findings);
+        mergeLlmStats(llmStats, enrichResult.stats);
+      }
+
       return {
         vulnerabilities: filteredVulnerabilities,
+        llm: llmEnabled
+          ? {
+              findings: filterFindingsAgainstVulnerabilities(llmFindings, filteredVulnerabilities),
+              stats: llmStats
+            }
+          : undefined,
         stats: {
           filesScanned,
           issuesFound: filteredVulnerabilities.length,
@@ -98,9 +127,6 @@ export class Runner {
     }
 
     // 4) 目录扫描：按 include 模式展开文件列表
-    const llmMaxFiles = config.llmMaxFiles || 5; // 默认最多扫描 5 个文件
-    let llmScannedCount = 0;
-
     for (const pattern of config.include || []) {
       const files = await glob(pattern, {
         ignore: config.exclude,
@@ -113,16 +139,9 @@ export class Runner {
         filesScanned++;
         try {
           const content = fs.readFileSync(file, 'utf-8');
+          fileContents.set(file, content);
           const results = await regexScanner.scan(file, content);
           const astResults = await astScanner.scan(file, content);
-
-          // 如果配置了API key且没有禁用，且未超过LLM扫描限制，则运行LLM扫描
-          if (config.useLlm && (config.apiKey || process.env.SKILL_SCAN_LLM_API_KEY) && llmScannedCount < llmMaxFiles) {
-            console.log(`[LLM] Scanning (${llmScannedCount + 1}/${llmMaxFiles}): ${file}`);
-            const llmResults = await llmScanner.scan(file, content);
-            vulnerabilities.push(...llmResults);
-            llmScannedCount++;
-          }
 
           vulnerabilities.push(...results);
           vulnerabilities.push(...astResults);
@@ -132,14 +151,34 @@ export class Runner {
       }
     }
 
-    if (llmScannedCount >= llmMaxFiles && config.useLlm) {
-      console.log(`[LLM] 已达到最大扫描文件数限制 (${llmMaxFiles})，其余文件仅使用正则和AST扫描。`);
+    if (llmDiscovery) {
+      const maxFiles = config.llmMaxFiles && config.llmMaxFiles > 0 ? config.llmMaxFiles : undefined;
+      const entries = maxFiles ? Array.from(fileContents.entries()).slice(0, maxFiles) : Array.from(fileContents.entries());
+      for (const [filePath, content] of entries) {
+        const discoveryResult = await llmDiscovery.discover({ filePath, content });
+        vulnerabilities.push(...discoveryResult.vulnerabilities);
+        llmFindings.push(...discoveryResult.findings);
+        mergeLlmStats(llmStats, discoveryResult.stats);
+      }
     }
 
     // 5) 基线过滤：用于忽略历史遗留告警
     const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
+
+    if (llmEnricher) {
+      const enrichResult = await llmEnricher.enrich(filteredVulnerabilities, fileContents);
+      llmFindings.push(...enrichResult.findings);
+      mergeLlmStats(llmStats, enrichResult.stats);
+    }
+
     return {
       vulnerabilities: filteredVulnerabilities,
+      llm: llmEnabled
+        ? {
+            findings: filterFindingsAgainstVulnerabilities(llmFindings, filteredVulnerabilities),
+            stats: llmStats
+          }
+        : undefined,
       stats: {
         filesScanned,
         issuesFound: filteredVulnerabilities.length,
@@ -238,4 +277,45 @@ export class Runner {
       console.error(`Error writing baseline to ${filePath}:`, err);
     }
   }
+}
+
+/**
+ * 合并 LLM 统计信息
+ * @param {LlmStats} target - 目标统计对象
+ * @param {LlmStats} source - 来源统计对象
+ * @returns {void} 无返回值
+ */
+function mergeLlmStats(target: LlmStats, source: LlmStats): void {
+  target.calls += source.calls;
+  target.cacheHits += source.cacheHits;
+  target.failures += source.failures;
+  target.durationMs += source.durationMs;
+}
+
+/**
+ * 过滤无对应漏洞的 LLM 发现，避免基线过滤后残留无效记录
+ * @param {LlmFinding[]} findings - LLM 发现/复核记录
+ * @param {Vulnerability[]} vulnerabilities - 基线过滤后的漏洞列表
+ * @returns {LlmFinding[]} 过滤后的记录
+ */
+function filterFindingsAgainstVulnerabilities(findings: LlmFinding[], vulnerabilities: Vulnerability[]): LlmFinding[] {
+  const keys = new Set(vulnerabilities.map((v) => `${v.ruleId}|${v.file}|${v.line ?? 0}`));
+  return findings.filter((f) => keys.has(`${(f.relatedRuleIds?.[0] ?? buildRuleIdFromFinding(f))}|${f.file}|${f.line ?? 0}`) || keys.has(`${buildRuleIdFromFinding(f)}|${f.file}|${f.line ?? 0}`));
+}
+
+/**
+ * 从 finding 推导一个可用于匹配的 ruleId
+ * @param {LlmFinding} finding - finding
+ * @returns {string} ruleId
+ */
+function buildRuleIdFromFinding(finding: LlmFinding): string {
+  if (finding.relatedRuleIds && finding.relatedRuleIds.length > 0) {
+    return finding.relatedRuleIds[0];
+  }
+  const normalized = finding.category
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `LLM-DISC-${normalized || 'UNKNOWN'}`;
 }

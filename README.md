@@ -51,8 +51,23 @@ presets.json       预设配置模板
 
 **启用方式：**
 ```bash
-export SKILL_SCAN_LLM_API_KEY="your-openai-api-key"
-npm run scan -- . --use-llm
+export SKILL_SCAN_LLM_API_KEY="your-api-key"
+
+# 注意：--llm-base-url 需要填写“完整端点”，且必须以 /chat/completions 结尾
+
+# OpenAI 示例
+npm run scan -- . \
+  --llm \
+  --llm-provider openai \
+  --llm-base-url "https://api.openai.com/v1/chat/completions" \
+  --llm-model "gpt-4.1-mini"
+
+# 火山方舟（豆包）示例
+npm run scan -- . \
+  --llm \
+  --llm-provider compatible \
+  --llm-base-url "https://ark.cn-beijing.volces.com/api/v3/chat/completions" \
+  --llm-model "doubao-seed-1-6-251015"
 ```
 
 #### 🎯 预设配置
@@ -107,11 +122,8 @@ npm run build
 ### LLM 扫描配置
 
 ```bash
-# 设置 OpenAI API Key
-export SKILL_SCAN_LLM_API_KEY="your-openai-api-key"
-
-# 可选：指定模型（默认使用 gpt-4o-mini）
-export SKILL_SCAN_LLM_MODEL="gpt-4-turbo"
+# 设置 API Key（只从环境变量读取，不建议写入配置文件）
+export SKILL_SCAN_LLM_API_KEY="your-api-key"
 ```
 
 ### 快速使用
@@ -126,8 +138,11 @@ npm run scan -- path/to/skill.zip
 npm run scan -- . --preset strict
 npm run scan -- . --preset ai-focused
 
-# 启用 LLM 语义分析
-npm run scan -- . --use-llm
+# 启用 LLM（需要配置完整端点 + model）
+npm run scan -- . \
+  --llm \
+  --llm-base-url "https://api.openai.com/v1/chat/completions" \
+  --llm-model "gpt-4.1-mini"
 ```
 
 ### 报告输出
@@ -167,7 +182,13 @@ npm run scan -- . --fail-on high
 - `--fail-on <level>` 失败阈值 (low|medium|high|critical)
 - `--preset <name>` 使用预设配置
 - `--list-presets` 列出所有可用预设
-- `--use-llm` 启用 LLM 语义分析
+- `--use-llm` 启用 LLM（兼容旧参数）
+- `--llm` 启用 LLM（推荐新参数）
+- `--llm-provider <provider>` LLM 提供方 (openai|compatible|local)
+- `--llm-base-url <url>` LLM 完整端点（必须以 /chat/completions 结尾）
+- `--llm-model <model>` 模型名称（OpenAI/方舟等对应的 model 字符串）
+- `--llm-mode <mode>` 扫描模式 (targeted|balanced|full)
+- `--llm-gate` 将 LLM-DISC 发现纳入阈值判断（默认不纳入）
 
 ### 配置文件示例
 
@@ -183,7 +204,16 @@ npm run scan -- . --fail-on high
   "disabledRuleIds": ["SEC-002"],
   "baselinePath": ".skill-scan.baseline.json",
   "outputFormat": "md",
-  "failOn": "high"
+  "failOn": "high",
+  "llm": {
+    "enabled": true,
+    "provider": "compatible",
+    "baseUrl": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+    "model": "doubao-seed-1-6-251015",
+    "apiKeyEnv": "SKILL_SCAN_LLM_API_KEY",
+    "mode": "targeted",
+    "gate": false
+  }
 }
 ```
 
@@ -298,10 +328,23 @@ npm run scan -- --list-presets
 
 ```bash
 # Set API key
-export SKILL_SCAN_LLM_API_KEY="your-openai-api-key"
+export SKILL_SCAN_LLM_API_KEY="your-api-key"
 
-# Enable LLM analysis
-npm run scan -- . --use-llm
+# Note: --llm-base-url must be the full endpoint and must end with /chat/completions
+
+# OpenAI example
+npm run scan -- . \
+  --llm \
+  --llm-provider openai \
+  --llm-base-url "https://api.openai.com/v1/chat/completions" \
+  --llm-model "gpt-4.1-mini"
+
+# Volcengine Ark (Doubao) example
+npm run scan -- . \
+  --llm \
+  --llm-provider compatible \
+  --llm-base-url "https://ark.cn-beijing.volces.com/api/v3/chat/completions" \
+  --llm-model "doubao-seed-1-6-251015"
 ```
 
 ### Preset Configurations
@@ -327,7 +370,13 @@ npm run scan -- . --use-llm
 - `--fail-on <level>` Failure threshold (low|medium|high|critical)
 - `--preset <name>` Use preset configuration
 - `--list-presets` List all available presets
-- `--use-llm` Enable LLM semantic analysis
+- `--use-llm` Enable LLM (legacy flag)
+- `--llm` Enable LLM (recommended)
+- `--llm-provider <provider>` LLM provider (openai|compatible|local)
+- `--llm-base-url <url>` Full endpoint (must end with /chat/completions)
+- `--llm-model <model>` Model name/id
+- `--llm-mode <mode>` Scan mode (targeted|balanced|full)
+- `--llm-gate` Include LLM-DISC in failure threshold
 
 ### CI Integration
 

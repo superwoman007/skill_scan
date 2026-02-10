@@ -6,7 +6,7 @@ import * as path from 'path';
 import * as os from 'os';
 import AdmZip from 'adm-zip';
 import { Runner } from '../core/runner';
-import { ScanResult, Severity, SkillConfig, Vulnerability } from '../types';
+import { LlmProvider, LlmScanMode, ScanResult, Severity, SkillConfig, Vulnerability } from '../types';
 
 // CLI 程序入口，负责参数解析、扫描调度、报告输出与退出码控制
 const program = new Command();
@@ -24,6 +24,12 @@ type ScanOptions = {
   preset?: string;
   listPresets?: boolean;
   useLlm?: boolean;
+  llm?: boolean;
+  llmProvider?: string;
+  llmBaseUrl?: string;
+  llmModel?: string;
+  llmMode?: string;
+  llmGate?: boolean;
 };
 
 program
@@ -46,6 +52,12 @@ program
   .option('--preset <name>', '使用预设配置')
   .option('--list-presets', '列出所有可用预设')
   .option('--use-llm', '启用 LLM 语义分析')
+  .option('--llm', '启用大模型安全分析（默认关闭）')
+  .option('--llm-provider <provider>', '大模型提供方 (openai|compatible|local)')
+  .option('--llm-base-url <url>', '大模型接口完整端点（必须以 /chat/completions 结尾）')
+  .option('--llm-model <model>', '大模型名称（如 gpt-4.1-mini）')
+  .option('--llm-mode <mode>', '大模型覆盖模式 (targeted|balanced|full)')
+  .option('--llm-gate', '将 LLM 发现纳入失败阈值判断')
   .action(handleScan);
 
 /**
@@ -85,6 +97,9 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
   }
 
   const runner = new Runner(options.config);
+  const configFromFile = loadCliConfig(options.config);
+  const effectiveLlmGate = Boolean(options.llmGate ?? configFromFile.llm?.gate);
+  const llmEnabledFromCli = Boolean(options.llm || options.useLlm);
 
   // 处理 listPresets 选项
   if (options.listPresets) {
@@ -93,7 +108,7 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
   }
 
   const overrides: Partial<SkillConfig> = pruneUndefined({
-    useLlm: options.useLlm,
+    useLlm: llmEnabledFromCli ? true : options.useLlm,
     preset: options.preset,
     rulesDir: options.rulesDir,
     enabledGroups: options.enableGroup && options.enableGroup.length > 0 ? options.enableGroup : undefined,
@@ -101,7 +116,17 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
     baselinePath: options.baseline,
     writeBaseline: options.writeBaseline,
     outputFormat: options.format ? normalizeFormat(options.format) : undefined,
-    failOn: normalizeSeverity(options.failOn)
+    failOn: normalizeSeverity(options.failOn),
+    llm: llmEnabledFromCli || options.llmProvider || options.llmBaseUrl || options.llmModel || options.llmMode || options.llmGate
+      ? pruneUndefined({
+          enabled: llmEnabledFromCli ? true : undefined,
+          provider: normalizeLlmProvider(options.llmProvider),
+          baseUrl: options.llmBaseUrl,
+          model: options.llmModel,
+          mode: normalizeLlmMode(options.llmMode),
+          gate: options.llmGate
+        })
+      : undefined
   });
 
   try {
@@ -120,9 +145,11 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
       console.log(chalk.green('未发现安全漏洞。干得好！'));
     }
 
-    const outputPath = resolveOutputPath(options.output, options.format);
+    const formatFromConfig = configFromFile.outputFormat;
+    const effectiveFormat = options.format ? normalizeFormat(options.format) : (formatFromConfig ? normalizeFormat(formatFromConfig) : undefined);
+    const outputPath = resolveOutputPath(options.output, effectiveFormat);
     if (outputPath) {
-      const report = generateReport(result, options.format);
+      const report = generateReport(result, effectiveFormat);
       fs.writeFileSync(outputPath, report);
       console.log(chalk.blue(`\n报告已保存至 ${outputPath}`));
     }
@@ -136,7 +163,7 @@ async function handleScan(target: string | undefined, options: ScanOptions): Pro
       }
     }
 
-    if (shouldFail(result.vulnerabilities, options.failOn)) {
+    if (shouldFail(result.vulnerabilities, options.failOn, effectiveLlmGate)) {
       process.exit(1);
     }
   } catch (err) {
@@ -178,7 +205,8 @@ function generateReport(result: ScanResult, format?: string): string {
     return JSON.stringify({
       date: new Date().toISOString(),
       stats: result.stats,
-      vulnerabilities: result.vulnerabilities
+      vulnerabilities: result.vulnerabilities,
+      llm: result.llm
     }, null, 2);
   }
   if (normalized === 'sarif') {
@@ -187,6 +215,9 @@ function generateReport(result: ScanResult, format?: string): string {
   let md = '# Skill 安全扫描报告\n\n';
   md += `日期: ${new Date().toLocaleString('zh-CN')}\n\n`;
   md += `扫描文件数: ${result.stats.filesScanned}\n\n`;
+  if (result.llm && result.llm.findings.length > 0) {
+    md += `大模型分析数: ${result.llm.findings.length}\n\n`;
+  }
   if (result.vulnerabilities.length === 0) {
     md += '## ✅ 未发现安全漏洞。\n';
   } else {
@@ -200,6 +231,30 @@ function generateReport(result: ScanResult, format?: string): string {
       md += '---\n\n';
     });
   }
+
+  if (result.llm && result.llm.findings.length > 0) {
+    md += '## 🤖 大模型分析\n\n';
+    result.llm.findings.forEach((f) => {
+      md += `### [${f.severity.toUpperCase()}] ${f.title}\n`;
+      md += `**类别**: ${f.category}\n\n`;
+      md += `**置信度**: ${f.confidence}；**需人工复核**: ${f.needsReview ? '是' : '否'}\n\n`;
+      md += `**位置**: \`${f.file}:${f.line ?? 0}\`\n\n`;
+      if (f.evidence) {
+        md += `**证据**:\n\`\`\`\n${f.evidence}\n\`\`\`\n\n`;
+      }
+      if (f.attackScenario) {
+        md += `**利用方式**: ${f.attackScenario}\n\n`;
+      }
+      if (f.fix) {
+        md += `**修复建议**: ${f.fix}\n\n`;
+      }
+      if (f.safeAlternative) {
+        md += `**更安全替代**: ${f.safeAlternative}\n\n`;
+      }
+      md += '---\n\n';
+    });
+  }
+
   return md;
 }
 
@@ -210,6 +265,22 @@ function generateReport(result: ScanResult, format?: string): string {
  * @returns {object} SARIF 兼容对象
  */
 function buildSarif(result: ScanResult): object {
+  const llmMap = new Map<string, { confidence?: string; needsReview?: boolean; category?: string; fix?: string; attackScenario?: string; provider?: string; model?: string; promptHash?: string }>();
+  (result.llm?.findings ?? []).forEach((f) => {
+    const ruleId = (f.relatedRuleIds && f.relatedRuleIds.length > 0) ? f.relatedRuleIds[0] : `LLM-DISC-${f.category.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'UNKNOWN'}`;
+    const key = `${ruleId}|${f.file}|${f.line ?? 0}`;
+    llmMap.set(key, {
+      confidence: f.confidence,
+      needsReview: f.needsReview,
+      category: f.category,
+      fix: f.fix,
+      attackScenario: f.attackScenario,
+      provider: f.provider,
+      model: f.model,
+      promptHash: f.promptHash
+    });
+  });
+
   const ruleMap = new Map<string, { id: string; name: string; description: string }>();
   result.vulnerabilities.forEach((v) => {
     if (!ruleMap.has(v.ruleId)) {
@@ -221,19 +292,24 @@ function buildSarif(result: ScanResult): object {
     name: r.name,
     shortDescription: { text: r.description }
   }));
-  const results = result.vulnerabilities.map((v) => ({
-    ruleId: v.ruleId,
-    level: mapSarifLevel(v.severity),
-    message: { text: v.description },
-    locations: [
-      {
-        physicalLocation: {
-          artifactLocation: { uri: v.file },
-          region: { startLine: v.line || 1 }
+  const results = result.vulnerabilities.map((v) => {
+    const key = `${v.ruleId}|${v.file}|${v.line ?? 0}`;
+    const llm = llmMap.get(key);
+    return {
+      ruleId: v.ruleId,
+      level: mapSarifLevel(v.severity),
+      message: { text: v.description },
+      locations: [
+        {
+          physicalLocation: {
+            artifactLocation: { uri: v.file },
+            region: { startLine: v.line || 1 }
+          }
         }
-      }
-    ]
-  }));
+      ],
+      properties: llm ? { llm } : undefined
+    };
+  });
   return {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
@@ -278,6 +354,30 @@ function normalizeFormat(format?: string): 'md' | 'json' | 'sarif' {
     return format;
   }
   return 'md';
+}
+
+/**
+ * 规范化大模型 provider 参数
+ * @param {string} [provider] - 原始 provider
+ * @returns {LlmProvider|undefined} 规范化后的 provider
+ */
+function normalizeLlmProvider(provider?: string): LlmProvider | undefined {
+  if (provider === 'openai' || provider === 'compatible' || provider === 'local') {
+    return provider;
+  }
+  return undefined;
+}
+
+/**
+ * 规范化大模型扫描模式参数
+ * @param {string} [mode] - 原始 mode
+ * @returns {LlmScanMode|undefined} 规范化后的 mode
+ */
+function normalizeLlmMode(mode?: string): LlmScanMode | undefined {
+  if (mode === 'targeted' || mode === 'balanced' || mode === 'full') {
+    return mode;
+  }
+  return undefined;
 }
 
 // 根据格式推断默认输出文件名
@@ -339,13 +439,32 @@ function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
  * @param {string} [failOn] - 失败阈值（low|medium|high|critical）
  * @returns {boolean} 是否触发失败
  */
-function shouldFail(vulnerabilities: Vulnerability[], failOn?: string): boolean {
+function shouldFail(vulnerabilities: Vulnerability[], failOn?: string, llmGate?: boolean): boolean {
   const threshold = normalizeSeverity(failOn);
+  const selected = llmGate ? vulnerabilities : vulnerabilities.filter((v) => !v.ruleId.startsWith('LLM-DISC-'));
   if (!threshold) {
-    return vulnerabilities.length > 0;
+    return selected.length > 0;
   }
   const minRank = severityRank(threshold);
-  return vulnerabilities.some((v) => severityRank(v.severity) >= minRank);
+  return selected.some((v) => severityRank(v.severity) >= minRank);
+}
+
+/**
+ * CLI 侧加载配置文件，用于推断默认输出格式与 gate 参数
+ * @param {string | undefined} configPath - 配置文件路径
+ * @returns {Partial<SkillConfig>} 解析得到的配置对象
+ */
+function loadCliConfig(configPath?: string): Partial<SkillConfig> {
+  const resolvedPath = configPath ? path.resolve(configPath) : path.join(process.cwd(), 'skill-scan.config.json');
+  try {
+    if (!fs.existsSync(resolvedPath)) {
+      return {};
+    }
+    const content = fs.readFileSync(resolvedPath, 'utf-8');
+    return JSON.parse(content) as Partial<SkillConfig>;
+  } catch {
+    return {};
+  }
 }
 
 // 规范化严重级别字符串

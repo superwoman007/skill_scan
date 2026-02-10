@@ -23,7 +23,24 @@ export class ConfigManager {
     include: ['**/*.{js,ts,py,json}'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/test/**'],
     rules: [],
-    outputFormat: 'md'
+    outputFormat: 'md',
+    llm: {
+      enabled: false,
+      provider: 'compatible',
+      mode: 'targeted',
+      apiKeyEnv: 'SKILL_SCAN_LLM_API_KEY',
+      timeoutMs: 30000,
+      maxConcurrency: 2,
+      includeEvidenceLines: 8,
+      gate: false,
+      cache: {
+        enabled: false,
+        dir: '.skill-scan-cache'
+      },
+      redact: {
+        enabled: true
+      }
+    }
   };
   private presets: Presets = {};
 
@@ -120,14 +137,22 @@ export class ConfigManager {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       const userConfig = JSON.parse(content);
-
       // 如果配置指定了预设，先应用预设
       if (userConfig.preset) {
         this.applyPreset(userConfig.preset);
       }
 
-      // 浅合并：用户配置覆盖默认值
-      this.config = { ...this.config, ...userConfig };
+      // 浅合并为主；对 llm 采用一层合并以降低配置成本
+      this.config = {
+        ...this.config,
+        ...userConfig,
+        llm: {
+          ...this.config.llm,
+          ...userConfig.llm,
+          cache: { ...this.config.llm?.cache, ...userConfig.llm?.cache },
+          redact: { ...this.config.llm?.redact, ...userConfig.llm?.redact }
+        }
+      };
     } catch (error) {
       console.error(`Error loading config from ${filePath}:`, error);
     }
@@ -154,6 +179,17 @@ export class ConfigManager {
 
     // 合并其他配置字段（不包括 preset）
     const { preset, ...otherOverrides } = overrides;
-    this.config = { ...this.config, ...otherOverrides };
+    this.config = {
+      ...this.config,
+      ...otherOverrides,
+      llm: otherOverrides.llm
+        ? {
+            ...this.config.llm,
+            ...otherOverrides.llm,
+            cache: { ...this.config.llm?.cache, ...otherOverrides.llm?.cache },
+            redact: { ...this.config.llm?.redact, ...otherOverrides.llm?.redact }
+          }
+        : this.config.llm
+    };
   }
 }

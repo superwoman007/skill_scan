@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "scan": "ts-node src/bin/cli.ts scan",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "ts-node test/run-tests.ts"
   },
   "keywords": [],
   "author": "",
