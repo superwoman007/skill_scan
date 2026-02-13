@@ -4,11 +4,12 @@ import { ConfigManager } from './config';
 import { RuleLoader } from './rules';
 import { RegexScanner } from '../scanners/code';
 import { AstScanner } from '../scanners/ast';
+import { LLMScanner } from '../scanners/llm';
 import { Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
 
 // 扫描调度器：
 // - 读取配置与规则
-// - 调用 Regex / AST 扫描器
+// - 调用 Regex / AST / LLM 扫描器
 // - 处理基线过滤与统计信息
 export class Runner {
   private configManager: ConfigManager;
@@ -34,14 +35,14 @@ export class Runner {
       this.configManager.applyOverrides(overrides);
     }
     const config = this.configManager.getConfig();
-    
+
     // 1) 规则加载：内置 + 配置内规则 + 自定义文件 + 规则目录
     let rules = RuleLoader.loadBuiltinRules();
     if (config.rules) {
       rules = [...rules, ...config.rules];
     }
-    if (config.customRulesPath) {
-      const customRules = RuleLoader.loadCustomRules(config.customRulesPath);
+    if (config.customRulesPathPath) {
+      const customRules = RuleLoader.loadCustomRules(config.customRulesPathPath);
       rules = [...rules, ...customRules];
     }
     if (config.rulesDir) {
@@ -54,16 +55,39 @@ export class Runner {
     const regexScanner = new RegexScanner(rules);
     const astScanner = new AstScanner(rules);
 
+    // LLM 扫描器（可选）
+    const useLlm = (config as any).useLlm || false;
+    const analyzeIntent = (config as any).analyzeIntent || false;
+    let llmScanner: LLMScanner | undefined;
+    if (useLlm) {
+      const apiKey = (config as any).apiKey;
+      const model = (config as any).llmModel;
+      const baseURL = (config as any).llmEndpoint;
+      llmScanner = new LLMScanner(rules, apiKey, model, baseURL, analyzeIntent);
+
+      if (analyzeIntent) {
+        console.log('\n[Config] Mode: LLM Intent Analysis (XGPT-style)');
+      } else {
+        console.log('\n[Config] Mode: LLM Semantic Analysis');
+      }
+    }
+
     const vulnerabilities: Vulnerability[] = [];
     let filesScanned = 0;
 
-    // 3) 单文件扫描：直接读取内容并运行两个扫描器
+    // 3) 单文件扫描：直接读取内容并运行扫描器
     if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
       try {
         const content = fs.readFileSync(targetDir, 'utf-8');
         const results = await regexScanner.scan(targetDir, content);
         const astResults = await astScanner.scan(targetDir, content);
         vulnerabilities.push(...results, ...astResults);
+
+        if (llmScanner) {
+          const llmResults = await llmScanner.scan(targetDir, content);
+          vulnerabilities.push(...llmResults);
+        }
+
         filesScanned = 1;
       } catch (err) {
         console.error(`Error scanning file ${targetDir}:`, err);
@@ -80,6 +104,9 @@ export class Runner {
     }
 
     // 4) 目录扫描：按 include 模式展开文件列表
+    // 过滤可扫描的文件扩展名
+    const allowedExtensions = ['.py', '.js', '.ts', '.sh', '.bash', '.json', '.md'];
+
     for (const pattern of config.include || []) {
       const files = await glob(pattern, {
         ignore: config.exclude,
@@ -89,6 +116,11 @@ export class Runner {
       });
 
       for (const file of files) {
+        // 跳过不允许的文件类型
+        if (!allowedExtensions.some(ext => file.endsWith(ext))) {
+          continue;
+        }
+
         filesScanned++;
         try {
           const content = fs.readFileSync(file, 'utf-8');
@@ -96,6 +128,12 @@ export class Runner {
           const astResults = await astScanner.scan(file, content);
           vulnerabilities.push(...results);
           vulnerabilities.push(...astResults);
+
+          if (llmScanner) {
+            console.log(`[LLM] Scanning (${filesScanned}/${files.length}): ${file}`);
+            const llmResults = await llmScanner.scan(file, content);
+            vulnerabilities.push(...llmResults);
+          }
         } catch (err) {
           console.error(`Error scanning file ${file}:`, err);
         }

@@ -40,6 +40,8 @@ program
   .option('--baseline <path>', '基线文件路径')
   .option('--write-baseline', '写入当前结果为基线')
   .option('--fail-on <level>', '失败阈值 (low|medium|high|critical)')
+  .option('--use-llm', '启用 LLM 语义分析')
+  .option('--analyze-intent', '启用 LLM 意图分析（XGPT 风格）')
   .action(handleScan);
 
 /**

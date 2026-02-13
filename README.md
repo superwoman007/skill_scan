@@ -88,6 +88,8 @@ npm run scan -- . --fail-on high
 - --baseline <path> 基线文件路径
 - --write-baseline 写入当前结果为基线
 - --fail-on <level> 失败阈值 (low|medium|high|critical)
+- --use-llm 启用 LLM 语义分析
+- --analyze-intent 启用 LLM 意图分析（XGPT 风格）
 
 ### 配置文件示例
 创建 `skill-scan.config.json`：
@@ -100,13 +102,39 @@ npm run scan -- . --fail-on high
   "disabledRuleIds": ["SEC-002"],
   "baselinePath": ".skill-scan.baseline.json",
   "outputFormat": "md",
-  "failOn": "high"
+  "failOn": "high",
+  "useLLM": true,
+  "analyzeIntent": true
 }
 ```
 
 使用配置文件：
 ```bash
 npm run scan -- . -c ./skill-scan.config.json
+```
+
+### LLM 语义分析
+
+启用 LLM 深度语义分析：
+```bash
+npm run scan -- . --use-llm
+```
+
+启用 XGPT 风格的意图分析：
+```bash
+npm run scan -- . --analyze-intent
+```
+
+组合使用：
+```bash
+npm run scan -- . --use-llm --analyze-intent --format json --output report.json
+```
+
+**环境变量配置**（使用 Clawdbot 的火山引擎配置）：
+```bash
+export SKILL_SCAN_LLM_API_KEY="your-api-key"
+export SKILL_SCAN_LLM_ENDPOINT="https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+export SKILL_SCAN_LLM_MODEL="glm-4.7"
 ```
 
 ### 规则格式
@@ -250,6 +278,8 @@ npm run scan -- . --fail-on high
 - --baseline <path> Baseline file path
 - --write-baseline Write current results as baseline
 - --fail-on <level> Failure threshold (low|medium|high|critical)
+- --use-llm Enable LLM semantic analysis
+- --analyze-intent Enable LLM intent analysis (XGPT style)
 
 ### Config Example
 Create `skill-scan.config.json`:
@@ -262,13 +292,39 @@ Create `skill-scan.config.json`:
   "disabledRuleIds": ["SEC-002"],
   "baselinePath": ".skill-scan.baseline.json",
   "outputFormat": "md",
-  "failOn": "high"
+  "failOn": "high",
+  "useLLM": true,
+  "analyzeIntent": true
 }
 ```
 
 Use the config file:
 ```bash
 npm run scan -- . -c ./skill-scan.config.json
+```
+
+### LLM Semantic Analysis
+
+Enable LLM deep semantic analysis:
+```bash
+npm run scan -- . --use-llm
+```
+
+Enable XGPT-style intent analysis:
+```bash
+npm run scan -- . --analyze-intent
+```
+
+Combine both:
+```bash
+npm run scan -- . --use-llm --analyze-intent --format json --output report.json
+```
+
+**Environment Variables** (use Clawdbot's VolcEngine config):
+```bash
+export SKILL_SCAN_LLM_API_KEY="your-api-key"
+export SKILL_SCAN_LLM_ENDPOINT="https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
+export SKILL_SCAN_LLM_MODEL="glm-4.7"
 ```
 
 ### Rule Format

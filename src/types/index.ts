@@ -42,7 +42,7 @@ export interface SkillConfig {
   include?: string[];
   exclude?: string[];
   rules?: Rule[];
-  customRulesPath?: string;
+  customRulesPathPath?: string;
   rulesDir?: string;
   enabledGroups?: string[];
   disabledRuleIds?: string[];
@@ -50,4 +50,9 @@ export interface SkillConfig {
   writeBaseline?: boolean;
   outputFormat?: 'md' | 'json' | 'sarif';
   failOn?: Severity;
+  useLlm?: boolean;
+  analyzeIntent?: boolean;
+  apiKey?: string;
+  llmModel?: string;
+  llmEndpoint?: string;
 }
