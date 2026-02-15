@@ -130,11 +130,11 @@ npm run scan -- . --analyze-intent
 npm run scan -- . --use-llm --analyze-intent --format json --output report.json
 ```
 
-**环境变量配置**（使用 Clawdbot 的火山引擎配置）：
+**环境变量配置**（配置 LLM API 密钥）：
 ```bash
-export SKILL_SCAN_LLM_API_KEY="your-api-key"
-export SKILL_SCAN_LLM_ENDPOINT="https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
-export SKILL_SCAN_LLM_MODEL="glm-4.7"
+export SKILL_SCAN_LLM_API_KEY="your-api-key-here"
+export SKILL_SCAN_LLM_ENDPOINT="https://api.example.com/v1/chat/completions"
+export SKILL_SCAN_LLM_MODEL="your-model-name"
 ```
 
 ### 规则格式
@@ -320,11 +320,11 @@ Combine both:
 npm run scan -- . --use-llm --analyze-intent --format json --output report.json
 ```
 
-**Environment Variables** (use Clawdbot's VolcEngine config):
+**Environment Variables** (configure your LLM API):
 ```bash
-export SKILL_SCAN_LLM_API_KEY="your-api-key"
-export SKILL_SCAN_LLM_ENDPOINT="https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions"
-export SKILL_SCAN_LLM_MODEL="glm-4.7"
+export SKILL_SCAN_LLM_API_KEY="your-api-key-here"
+export SKILL_SCAN_LLM_ENDPOINT="https://api.example.com/v1/chat/completions"
+export SKILL_SCAN_LLM_MODEL="your-model-name"
 ```
 
 ### Rule Format
