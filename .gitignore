@@ -1,5 +1,6 @@
 node_modules/
 dist/
+src/**/*.js
 report*.md
 report*.json
 report*.sarif

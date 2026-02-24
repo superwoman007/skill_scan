@@ -11,7 +11,7 @@ import { LlmFinding, LlmStats, Rule, ScanResult, SkillConfig, Vulnerability } fr
 
 // 扫描调度器：
 // - 读取配置与规则
-// - 调用 Regex / AST 扫描器
+// - 调用 Regex / AST / LLM 扫描器
 // - 处理基线过滤与统计信息
 export class Runner {
   private configManager: ConfigManager;
@@ -19,7 +19,6 @@ export class Runner {
   /**
    * 创建扫描调度器
    * @param {string} [configPath] - 配置文件路径；不传使用默认配置
-   * @returns {void} 无返回值
    */
   constructor(configPath?: string) {
     this.configManager = new ConfigManager(configPath);
@@ -46,29 +45,12 @@ export class Runner {
     const config = this.configManager.getConfig();
 
     // 1) 规则加载：内置 + 配置内规则 + 自定义文件 + 规则目录
-    let rules = RuleLoader.loadBuiltinRules();
-    if (config.rules) {
-      rules = [...rules, ...config.rules];
-    }
-    if (config.customRulesPath) {
-      const customRules = RuleLoader.loadCustomRules(config.customRulesPath);
-      rules = [...rules, ...customRules];
-    }
-    if (config.rulesDir) {
-      const dirRules = RuleLoader.loadRulesFromDirectory(config.rulesDir);
-      rules = [...rules, ...dirRules];
-    }
-    rules = this.filterRules(rules, config.enabledGroups, config.disabledRuleIds);
+    const rules = this.loadRules(config);
 
     // 2) 初始化扫描器
     const regexScanner = new RegexScanner(rules);
     const astScanner = new AstScanner(rules);
 
-    const vulnerabilities: Vulnerability[] = [];
-    let filesScanned = 0;
-    const fileContents = new Map<string, string>();
-    const llmFindings: LlmFinding[] = [];
-    const llmStats: LlmStats = { calls: 0, cacheHits: 0, failures: 0, durationMs: 0 };
     const llmEnabled = Boolean(config.llm?.enabled || config.useLlm);
     const effectiveLlmConfig = {
       ...(config.llm ?? {}),
@@ -82,75 +64,25 @@ export class Runner {
     const llmDiscovery = llmClient ? new LlmDiscoveryScanner(llmClient, effectiveLlmConfig) : undefined;
     const llmEnricher = llmClient ? new LlmEnricher(llmClient, effectiveLlmConfig) : undefined;
 
-    // 3) 单文件扫描：直接读取内容并运行两个扫描器
-    if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
+    // 3) 收集文件内容
+    const fileContents = await this.collectFiles(targetDir, config);
+
+    // 4) 统一扫描流程
+    const vulnerabilities: Vulnerability[] = [];
+    const llmFindings: LlmFinding[] = [];
+    const llmStats: LlmStats = { calls: 0, cacheHits: 0, failures: 0, durationMs: 0 };
+
+    for (const [filePath, content] of fileContents) {
       try {
-        const content = fs.readFileSync(targetDir, 'utf-8');
-        fileContents.set(targetDir, content);
-        const results = await regexScanner.scan(targetDir, content);
-        const astResults = await astScanner.scan(targetDir, content);
-        vulnerabilities.push(...results, ...astResults);
-        filesScanned = 1;
-
-        if (llmDiscovery) {
-          const discoveryResult = await llmDiscovery.discover({ filePath: targetDir, content });
-          vulnerabilities.push(...discoveryResult.vulnerabilities);
-          llmFindings.push(...discoveryResult.findings);
-          mergeLlmStats(llmStats, discoveryResult.stats);
-        }
+        const regexResults = await regexScanner.scan(filePath, content);
+        const astResults = await astScanner.scan(filePath, content);
+        vulnerabilities.push(...regexResults, ...astResults);
       } catch (err) {
-        console.error(`Error scanning file ${targetDir}:`, err);
-      }
-
-      const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
-
-      if (llmEnricher) {
-        const enrichResult = await llmEnricher.enrich(filteredVulnerabilities, fileContents);
-        llmFindings.push(...enrichResult.findings);
-        mergeLlmStats(llmStats, enrichResult.stats);
-      }
-
-      return {
-        vulnerabilities: filteredVulnerabilities,
-        llm: llmEnabled
-          ? {
-              findings: filterFindingsAgainstVulnerabilities(llmFindings, filteredVulnerabilities),
-              stats: llmStats
-            }
-          : undefined,
-        stats: {
-          filesScanned,
-          issuesFound: filteredVulnerabilities.length,
-          durationMs: Date.now() - startTime
-        }
-      };
-    }
-
-    // 4) 目录扫描：按 include 模式展开文件列表
-    for (const pattern of config.include || []) {
-      const files = await glob(pattern, {
-        ignore: config.exclude,
-        nodir: true,
-        absolute: true,
-        cwd: targetDir
-      });
-
-      for (const file of files) {
-        filesScanned++;
-        try {
-          const content = fs.readFileSync(file, 'utf-8');
-          fileContents.set(file, content);
-          const results = await regexScanner.scan(file, content);
-          const astResults = await astScanner.scan(file, content);
-
-          vulnerabilities.push(...results);
-          vulnerabilities.push(...astResults);
-        } catch (err) {
-          console.error(`Error scanning file ${file}:`, err);
-        }
+        console.error(`Error scanning file ${filePath}:`, err);
       }
     }
 
+    // 5) LLM 发现
     if (llmDiscovery) {
       const maxFiles = config.llmMaxFiles && config.llmMaxFiles > 0 ? config.llmMaxFiles : undefined;
       const entries = maxFiles ? Array.from(fileContents.entries()).slice(0, maxFiles) : Array.from(fileContents.entries());
@@ -162,15 +94,17 @@ export class Runner {
       }
     }
 
-    // 5) 基线过滤：用于忽略历史遗留告警
+    // 6) 基线过滤
     const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
 
+    // 7) LLM 增强
     if (llmEnricher) {
       const enrichResult = await llmEnricher.enrich(filteredVulnerabilities, fileContents);
       llmFindings.push(...enrichResult.findings);
       mergeLlmStats(llmStats, enrichResult.stats);
     }
 
+    // 8) 组装返回结果
     return {
       vulnerabilities: filteredVulnerabilities,
       llm: llmEnabled
@@ -180,11 +114,74 @@ export class Runner {
           }
         : undefined,
       stats: {
-        filesScanned,
+        filesScanned: fileContents.size,
         issuesFound: filteredVulnerabilities.length,
         durationMs: Date.now() - startTime
       }
     };
+  }
+
+  /**
+   * 加载并过滤规则
+   * @param {SkillConfig} config - 当前配置
+   * @returns {Rule[]} 过滤后的规则列表
+   */
+  private loadRules(config: SkillConfig): Rule[] {
+    let rules = RuleLoader.loadBuiltinRules();
+    if (config.rules) {
+      rules = [...rules, ...config.rules];
+    }
+    if (config.customRulesPath) {
+      const customRules = RuleLoader.loadCustomRules(config.customRulesPath);
+      rules = [...rules, ...customRules];
+    }
+    if (config.rulesDir) {
+      const dirRules = RuleLoader.loadRulesFromDirectory(config.rulesDir);
+      rules = [...rules, ...dirRules];
+    }
+    return this.filterRules(rules, config.enabledGroups, config.disabledRuleIds);
+  }
+
+  /**
+   * 收集待扫描文件内容
+   * @param {string} targetDir - 扫描目标路径
+   * @param {SkillConfig} config - 当前配置
+   * @returns {Promise<Map<string, string>>} 文件路径到内容的映射
+   */
+  private async collectFiles(targetDir: string, config: SkillConfig): Promise<Map<string, string>> {
+    const fileContents = new Map<string, string>();
+
+    // 单文件模式
+    if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
+      try {
+        const content = fs.readFileSync(targetDir, 'utf-8');
+        fileContents.set(targetDir, content);
+      } catch (err) {
+        console.error(`Error reading file ${targetDir}:`, err);
+      }
+      return fileContents;
+    }
+
+    // 目录模式：按 include 模式展开文件列表
+    for (const pattern of config.include || []) {
+      const files = await glob(pattern, {
+        ignore: config.exclude,
+        nodir: true,
+        absolute: true,
+        cwd: targetDir
+      });
+
+      for (const file of files) {
+        try {
+          const content = fs.readFileSync(file, 'utf-8');
+          fileContents.set(file, content);
+        } catch (err) {
+          console.error(`Error reading file ${file}:`, err);
+        }
+      }
+    }
+
+    return fileContents;
   }
 
   /**
@@ -268,7 +265,6 @@ export class Runner {
    * 写入基线文件
    * @param {string} filePath - 基线文件路径
    * @param {string[]} items - 漏洞签名列表
-   * @returns {void} 无返回值
    */
   private writeBaseline(filePath: string, items: string[]) {
     try {
@@ -283,7 +279,6 @@ export class Runner {
  * 合并 LLM 统计信息
  * @param {LlmStats} target - 目标统计对象
  * @param {LlmStats} source - 来源统计对象
- * @returns {void} 无返回值
  */
 function mergeLlmStats(target: LlmStats, source: LlmStats): void {
   target.calls += source.calls;

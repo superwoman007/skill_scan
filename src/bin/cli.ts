@@ -32,10 +32,14 @@ type ScanOptions = {
   llmGate?: boolean;
 };
 
+// 从 package.json 读取版本号
+const packageJsonPath = path.join(__dirname, '../../package.json');
+const packageVersion = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')).version as string;
+
 program
   .name('skill-scan')
   .description('技能开发安全扫描工具')
-  .version('1.0.0');
+  .version(packageVersion);
 
 program
   .command('scan [target]')
