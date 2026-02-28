@@ -4,23 +4,27 @@ import { ConfigManager } from './config';
 import { RuleLoader } from './rules';
 import { RegexScanner } from '../scanners/code';
 import { AstScanner } from '../scanners/ast';
-import { LLMScanner } from '../scanners/llm';
-import { Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
+import { createLlmClient } from '../llm/client';
+import { LlmDiscoveryScanner } from '../scanners/llmDiscovery';
+import { LlmEnricher } from '../scanners/llmEnricher';
+import { LlmFinding, LlmStats, Rule, ScanResult, SkillConfig, Vulnerability } from '../types';
 
-// 扫描调度器：
-// - 读取配置与规则
-// - 调用 Regex / AST / LLM 扫描器
-// - 处理基线过滤与统计信息
 export class Runner {
   private configManager: ConfigManager;
 
   /**
    * 创建扫描调度器
    * @param {string} [configPath] - 配置文件路径；不传使用默认配置
-   * @returns {void} 无返回值
    */
   constructor(configPath?: string) {
     this.configManager = new ConfigManager(configPath);
+  }
+
+  /**
+   * 列出所有可用预设配置
+   */
+  public listPresets(): void {
+    this.configManager.listPresets();
   }
 
   /**
@@ -36,7 +40,81 @@ export class Runner {
     }
     const config = this.configManager.getConfig();
 
-    // 1) 规则加载：内置 + 配置内规则 + 自定义文件 + 规则目录
+    const rules = this.loadRules(config);
+
+    const regexScanner = new RegexScanner(rules);
+    const astScanner = new AstScanner(rules);
+
+    const llmEnabled = Boolean(config.llm?.enabled || config.useLlm);
+    const effectiveLlmConfig = {
+      ...(config.llm ?? {}),
+      enabled: llmEnabled,
+      baseUrl: (config.llm?.baseUrl ?? config.llmEndpoint) as string | undefined,
+      model: (config.llm?.model ?? config.llmModel) as string | undefined,
+      apiKey: (config.llm?.apiKey ?? config.apiKey) as string | undefined,
+      gate: (config.llm?.gate ?? false) as boolean
+    };
+    const llmClient = llmEnabled ? createLlmClient(effectiveLlmConfig) : undefined;
+    const llmDiscovery = llmClient ? new LlmDiscoveryScanner(llmClient, effectiveLlmConfig) : undefined;
+    const llmEnricher = llmClient ? new LlmEnricher(llmClient, effectiveLlmConfig) : undefined;
+
+    const fileContents = await this.collectFiles(targetDir, config);
+
+    const vulnerabilities: Vulnerability[] = [];
+    const llmFindings: LlmFinding[] = [];
+    const llmStats: LlmStats = { calls: 0, cacheHits: 0, failures: 0, durationMs: 0 };
+
+    for (const [filePath, content] of fileContents) {
+      try {
+        const regexResults = await regexScanner.scan(filePath, content);
+        const astResults = await astScanner.scan(filePath, content);
+        vulnerabilities.push(...regexResults, ...astResults);
+      } catch (err) {
+        console.error(`Error scanning file ${filePath}:`, err);
+      }
+    }
+
+    if (llmDiscovery) {
+      const maxFiles = config.llmMaxFiles && config.llmMaxFiles > 0 ? config.llmMaxFiles : undefined;
+      const entries = maxFiles ? Array.from(fileContents.entries()).slice(0, maxFiles) : Array.from(fileContents.entries());
+      for (const [filePath, content] of entries) {
+        const discoveryResult = await llmDiscovery.discover({ filePath, content });
+        vulnerabilities.push(...discoveryResult.vulnerabilities);
+        llmFindings.push(...discoveryResult.findings);
+        mergeLlmStats(llmStats, discoveryResult.stats);
+      }
+    }
+
+    const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
+
+    if (llmEnricher) {
+      const enrichResult = await llmEnricher.enrich(filteredVulnerabilities, fileContents);
+      llmFindings.push(...enrichResult.findings);
+      mergeLlmStats(llmStats, enrichResult.stats);
+    }
+
+    return {
+      vulnerabilities: filteredVulnerabilities,
+      llm: llmEnabled
+        ? {
+            findings: filterFindingsAgainstVulnerabilities(llmFindings, filteredVulnerabilities),
+            stats: llmStats
+          }
+        : undefined,
+      stats: {
+        filesScanned: fileContents.size,
+        issuesFound: filteredVulnerabilities.length,
+        durationMs: Date.now() - startTime
+      }
+    };
+  }
+
+  /**
+   * 加载并过滤规则
+   * @param {SkillConfig} config - 当前配置
+   * @returns {Rule[]} 过滤后的规则列表
+   */
+  private loadRules(config: SkillConfig): Rule[] {
     let rules = RuleLoader.loadBuiltinRules();
     if (config.rules) {
       rules = [...rules, ...config.rules];
@@ -49,63 +127,27 @@ export class Runner {
       const dirRules = RuleLoader.loadRulesFromDirectory(config.rulesDir);
       rules = [...rules, ...dirRules];
     }
-    rules = this.filterRules(rules, config.enabledGroups, config.disabledRuleIds);
+    return this.filterRules(rules, config.enabledGroups, config.disabledRuleIds);
+  }
 
-    // 2) 初始化扫描器
-    const regexScanner = new RegexScanner(rules);
-    const astScanner = new AstScanner(rules);
+  /**
+   * 收集待扫描文件内容
+   * @param {string} targetDir - 扫描目标路径
+   * @param {SkillConfig} config - 当前配置
+   * @returns {Promise<Map<string, string>>} 文件路径到内容的映射
+   */
+  private async collectFiles(targetDir: string, config: SkillConfig): Promise<Map<string, string>> {
+    const fileContents = new Map<string, string>();
 
-    // LLM 扫描器（可选）
-    const useLlm = (config as any).useLlm || false;
-    const analyzeIntent = (config as any).analyzeIntent || false;
-    let llmScanner: LLMScanner | undefined;
-    if (useLlm) {
-      const apiKey = (config as any).apiKey;
-      const model = (config as any).llmModel;
-      const baseURL = (config as any).llmEndpoint;
-      llmScanner = new LLMScanner(rules, apiKey, model, baseURL, analyzeIntent);
-
-      if (analyzeIntent) {
-        console.log('\n[Config] Mode: LLM Intent Analysis (XGPT-style)');
-      } else {
-        console.log('\n[Config] Mode: LLM Semantic Analysis');
-      }
-    }
-
-    const vulnerabilities: Vulnerability[] = [];
-    let filesScanned = 0;
-
-    // 3) 单文件扫描：直接读取内容并运行扫描器
     if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
       try {
         const content = fs.readFileSync(targetDir, 'utf-8');
-        const results = await regexScanner.scan(targetDir, content);
-        const astResults = await astScanner.scan(targetDir, content);
-        vulnerabilities.push(...results, ...astResults);
-
-        if (llmScanner) {
-          const llmResults = await llmScanner.scan(targetDir, content);
-          vulnerabilities.push(...llmResults);
-        }
-
-        filesScanned = 1;
+        fileContents.set(targetDir, content);
       } catch (err) {
-        console.error(`Error scanning file ${targetDir}:`, err);
+        console.error(`Error reading file ${targetDir}:`, err);
       }
-      const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
-      return {
-        vulnerabilities: filteredVulnerabilities,
-        stats: {
-          filesScanned,
-          issuesFound: filteredVulnerabilities.length,
-          durationMs: Date.now() - startTime
-        }
-      };
+      return fileContents;
     }
-
-    // 4) 目录扫描：按 include 模式展开文件列表
-    // 过滤可扫描的文件扩展名
-    const allowedExtensions = ['.py', '.js', '.ts', '.sh', '.bash', '.json', '.md'];
 
     for (const pattern of config.include || []) {
       const files = await glob(pattern, {
@@ -116,40 +158,16 @@ export class Runner {
       });
 
       for (const file of files) {
-        // 跳过不允许的文件类型
-        if (!allowedExtensions.some(ext => file.endsWith(ext))) {
-          continue;
-        }
-
-        filesScanned++;
         try {
           const content = fs.readFileSync(file, 'utf-8');
-          const results = await regexScanner.scan(file, content);
-          const astResults = await astScanner.scan(file, content);
-          vulnerabilities.push(...results);
-          vulnerabilities.push(...astResults);
-
-          if (llmScanner) {
-            console.log(`[LLM] Scanning (${filesScanned}/${files.length}): ${file}`);
-            const llmResults = await llmScanner.scan(file, content);
-            vulnerabilities.push(...llmResults);
-          }
+          fileContents.set(file, content);
         } catch (err) {
-          console.error(`Error scanning file ${file}:`, err);
+          console.error(`Error reading file ${file}:`, err);
         }
       }
     }
 
-    // 5) 基线过滤：用于忽略历史遗留告警
-    const filteredVulnerabilities = this.applyBaselineFilter(vulnerabilities, config.baselinePath, config.writeBaseline);
-    return {
-      vulnerabilities: filteredVulnerabilities,
-      stats: {
-        filesScanned,
-        issuesFound: filteredVulnerabilities.length,
-        durationMs: Date.now() - startTime
-      }
-    };
+    return fileContents;
   }
 
   /**
@@ -233,7 +251,6 @@ export class Runner {
    * 写入基线文件
    * @param {string} filePath - 基线文件路径
    * @param {string[]} items - 漏洞签名列表
-   * @returns {void} 无返回值
    */
   private writeBaseline(filePath: string, items: string[]) {
     try {
@@ -242,4 +259,44 @@ export class Runner {
       console.error(`Error writing baseline to ${filePath}:`, err);
     }
   }
+}
+
+/**
+ * 合并 LLM 统计信息
+ * @param {LlmStats} target - 目标统计对象
+ * @param {LlmStats} source - 来源统计对象
+ */
+function mergeLlmStats(target: LlmStats, source: LlmStats): void {
+  target.calls += source.calls;
+  target.cacheHits += source.cacheHits;
+  target.failures += source.failures;
+  target.durationMs += source.durationMs;
+}
+
+/**
+ * 过滤无对应漏洞的 LLM 发现，避免基线过滤后残留无效记录
+ * @param {LlmFinding[]} findings - LLM 发现/复核记录
+ * @param {Vulnerability[]} vulnerabilities - 基线过滤后的漏洞列表
+ * @returns {LlmFinding[]} 过滤后的记录
+ */
+function filterFindingsAgainstVulnerabilities(findings: LlmFinding[], vulnerabilities: Vulnerability[]): LlmFinding[] {
+  const keys = new Set(vulnerabilities.map((v) => `${v.ruleId}|${v.file}|${v.line ?? 0}`));
+  return findings.filter((f) => keys.has(`${(f.relatedRuleIds?.[0] ?? buildRuleIdFromFinding(f))}|${f.file}|${f.line ?? 0}`) || keys.has(`${buildRuleIdFromFinding(f)}|${f.file}|${f.line ?? 0}`));
+}
+
+/**
+ * 从 finding 推导一个可用于匹配的 ruleId
+ * @param {LlmFinding} finding - finding
+ * @returns {string} ruleId
+ */
+function buildRuleIdFromFinding(finding: LlmFinding): string {
+  if (finding.relatedRuleIds && finding.relatedRuleIds.length > 0) {
+    return finding.relatedRuleIds[0];
+  }
+  const normalized = finding.category
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `LLM-DISC-${normalized || 'UNKNOWN'}`;
 }

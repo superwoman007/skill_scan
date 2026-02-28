@@ -13,8 +13,10 @@ export class RuleLoader {
    */
   public static loadBuiltinRules(): Rule[] {
     const rulesPath = path.join(__dirname, '../rules/security.json');
+    const fallbackRulesPath = path.join(__dirname, '../../src/rules/security.json');
     try {
-      const content = fs.readFileSync(rulesPath, 'utf-8');
+      const resolvedPath = fs.existsSync(rulesPath) ? rulesPath : fallbackRulesPath;
+      const content = fs.readFileSync(resolvedPath, 'utf-8');
       return JSON.parse(content);
     } catch (error) {
       console.error('Failed to load builtin rules:', error);
